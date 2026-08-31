@@ -9,6 +9,10 @@ never leaves your local network. You don't have to take our word for it —
 this receiver is all the code that ever touches your video, and you're
 looking at it.
 
+| Waiting for a phone | The first time one connects | Streaming |
+|---|---|---|
+| ![The receiver waiting, showing this computer's name, address and a QR code](docs/waiting.png) | ![The question asked before any screen is shown](docs/consent.png) | ![A phone's screen in the window, with a strip naming it](docs/streaming.png) |
+
 ## Quick start
 
 1. **Download** the receiver for

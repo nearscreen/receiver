@@ -66,23 +66,40 @@ pub fn local_addresses() -> Vec<IpAddr> {
         .into_iter()
         .filter(|interface| !interface.is_loopback())
         .filter_map(|interface| match interface.ip() {
-            IpAddr::V4(address) => Some((rank(&interface.name, address), IpAddr::V4(address))),
+            IpAddr::V4(address) => {
+                let rank = rank(&interface.name, address);
+                // Worth having in the log: "it shows the wrong address" is
+                // answered by seeing what this computer says it has.
+                debug!("interface {:?} has {address} (rank {rank})", interface.name);
+                Some((rank, IpAddr::V4(address)))
+            }
             IpAddr::V6(_) => None,
         })
         .collect();
     candidates.sort();
     candidates.dedup_by_key(|(_, address)| *address);
-    candidates.into_iter().map(|(_, address)| address).collect()
+    let addresses: Vec<IpAddr> = candidates.into_iter().map(|(_, address)| address).collect();
+    if let Some(first) = addresses.first() {
+        debug!("the phone will be told about {first} first");
+    }
+    addresses
 }
 
 /// How likely a phone on the same Wi-Fi is to reach this address; lower comes
-/// first. A machine with WSL, a VPN and a docking station has half a dozen
-/// addresses, and only one of them is the one to put in a QR code.
+/// first. A Windows machine with WSL, a VPN and a docking station has half a
+/// dozen addresses and only one of them is the one to put in a QR code.
+///
+/// Two things point at the right one, and neither is reliable alone: what the
+/// interface is called (WSL and VirtualBox say so, but not always in words we
+/// know) and which range the address is in. Home and office networks are
+/// nearly always 192.168.x or 10.x, while 172.16-31.x is where virtual
+/// switches put themselves.
 fn rank(interface: &str, address: std::net::Ipv4Addr) -> u8 {
-    const SYNTHETIC: [&str; 11] = [
+    const SYNTHETIC: [&str; 12] = [
         "vethernet",
         "wsl",
         "hyper-v",
+        "virtual",
         "virtualbox",
         "vmware",
         "docker",
@@ -93,16 +110,20 @@ fn rank(interface: &str, address: std::net::Ipv4Addr) -> u8 {
         "tap",
     ];
     let name = interface.to_ascii_lowercase();
-    let made_up = SYNTHETIC.iter().any(|marker| name.contains(marker));
+    let named_synthetic = SYNTHETIC.iter().any(|marker| name.contains(marker));
+    // 169.254.x means the interface never got an address at all.
     if address.is_link_local() {
-        // 169.254.x means the interface never got an address at all.
+        return 4;
+    }
+    if !address.is_private() {
         return 3;
     }
-    match (address.is_private(), made_up) {
-        (true, false) => 0,
-        (true, true) => 1,
-        (false, false) => 2,
-        (false, true) => 3,
+    // The range virtual switches hand themselves, and almost nobody else.
+    let carrier_range = address.octets()[0] == 172;
+    match (named_synthetic, carrier_range) {
+        (false, false) => 0,
+        (false, true) => 1,
+        (true, _) => 2,
     }
 }
 
