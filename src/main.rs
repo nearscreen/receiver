@@ -1,27 +1,33 @@
-//! Command-line entry point. Until the window exists this runs headless: it
-//! listens, logs what a phone sends and can write the raw stream to a file.
+//! Command-line entry point: listen, decode, show.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use log::{info, warn};
+use log::{error, info, warn};
+use winit::event_loop::EventLoopProxy;
 
 use nearscreen_receiver::config::Config;
+use nearscreen_receiver::decode::{self, Decoder, Nv12Frame};
 use nearscreen_receiver::net::{
     hostname, Advertisement, AllowAll, Codec, Interfaces, Server, ServerEvent, ServerOptions,
-    DEFAULT_PORT,
+    SessionHandle, StreamConfig, DEFAULT_PORT,
 };
+use nearscreen_receiver::ui::{self, FrameSlot, UiEvent};
 
 /// How often the running statistics are printed.
 const REPORT_EVERY: Duration = Duration::from_secs(2);
 
-#[derive(Parser, Debug)]
+/// Never pester the phone for keyframes more often than this.
+const KEYFRAME_EVERY: Duration = Duration::from_secs(1);
+
+#[derive(Parser, Debug, Clone)]
 #[command(
     name = "nearscreen-receiver",
     version,
@@ -31,10 +37,6 @@ struct Cli {
     /// Port to listen on (default: the settings file, else 9913)
     #[arg(long)]
     port: Option<u16>,
-
-    /// Write the received Annex-B stream to this file (playable with ffplay)
-    #[arg(long, value_name = "FILE")]
-    dump: Option<PathBuf>,
 
     /// Name shown on the phone (default: this computer's name)
     #[arg(long)]
@@ -60,6 +62,18 @@ struct Cli {
     #[arg(long, value_name = "IP|loopback")]
     mdns_interface: Option<String>,
 
+    /// Run without a window — for checking the network side on its own
+    #[arg(long)]
+    headless: bool,
+
+    /// Write the received Annex-B stream to this file (playable with ffplay)
+    #[arg(long, value_name = "FILE")]
+    dump: Option<PathBuf>,
+
+    /// Write the first decoded picture to this file, as a PPM image
+    #[arg(long, value_name = "FILE")]
+    save_frame: Option<PathBuf>,
+
     /// Log every record, not just the interesting ones
     #[arg(short, long)]
     verbose: bool,
@@ -70,8 +84,7 @@ fn main() -> Result<()> {
     init_logging(cli.verbose);
 
     let config = Config::load();
-    let codec = Codec::parse(&cli.codec)
-        .with_context(|| format!("unknown codec {:?} — use h264 or hevc", cli.codec))?;
+    let codec = choose_codec(&cli)?;
     let options = ServerOptions {
         port: cli.port.unwrap_or(config.port),
         name: cli.name.clone().unwrap_or_else(hostname),
@@ -94,36 +107,52 @@ fn main() -> Result<()> {
     // announcement.
     let _advertisement = start_advertisement(&cli, &config, &name, port);
 
-    let mut dump = match &cli.dump {
-        Some(path) => {
-            let file = File::create(path)
-                .with_context(|| format!("cannot write to {}", path.display()))?;
-            info!("writing the video stream to {}", path.display());
-            Some(BufWriter::new(file))
-        }
-        None => None,
-    };
-
-    let mut stats = Stats::new();
-    loop {
-        match events_rx.recv_timeout(Duration::from_millis(250)) {
-            Ok(event) => handle(event, &mut dump, &mut stats)?,
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        if stats.due() {
-            stats.report();
-            if let Some(dump) = dump.as_mut() {
-                dump.flush().ok();
-            }
-        }
+    if cli.headless {
+        return Pipeline::new(cli, None).run(&events_rx);
     }
-    Ok(())
+
+    let frames: FrameSlot = Arc::new(Mutex::new(None));
+    let slot = frames.clone();
+    ui::run(frames, move |proxy| {
+        let link = UiLink { slot, proxy };
+        let started = thread::Builder::new()
+            .name("nearscreen-decode".to_string())
+            .spawn(move || {
+                if let Err(e) = Pipeline::new(cli, Some(link)).run(&events_rx) {
+                    error!("{e:#}");
+                }
+            });
+        if let Err(e) = started {
+            error!("cannot start the decoding thread: {e}");
+        }
+    })
+}
+
+/// The codec we ask the phone for — never one this computer cannot decode.
+fn choose_codec(cli: &Cli) -> Result<Codec> {
+    let asked = Codec::parse(&cli.codec)
+        .with_context(|| format!("unknown codec {:?} — use h264 or hevc", cli.codec))?;
+    // Asking the system about its decoders puts this thread into a
+    // multi-threaded COM apartment, and the window needs a single-threaded one
+    // — so the question is asked on a thread that is thrown away afterwards.
+    let probe = thread::spawn(move || decode::is_supported(asked));
+    if probe.join().unwrap_or(false) {
+        return Ok(asked);
+    }
+    if asked == Codec::Hevc {
+        warn!(
+            "this computer cannot decode HEVC (the HEVC Video Extensions are not installed); \
+             asking the phone for H.264 instead"
+        );
+        return Ok(Codec::H264);
+    }
+    warn!("this computer cannot decode {asked}; the window will stay empty");
+    Ok(asked)
 }
 
 /// Announces the receiver unless asked not to. A network that will not carry
-/// the announcement is not fatal: the phone can still be pointed at us by
-/// address, so this only warns.
+/// the announcement is not fatal — the phone can still be pointed at us by
+/// address — so this only warns.
 fn start_advertisement(cli: &Cli, config: &Config, name: &str, port: u16) -> Option<Advertisement> {
     if cli.no_mdns {
         info!("not announcing on the network (--no-mdns)");
@@ -152,39 +181,255 @@ fn start_advertisement(cli: &Cli, config: &Config, name: &str, port: u16) -> Opt
     }
 }
 
-fn handle(event: ServerEvent, dump: &mut Option<BufWriter<File>>, stats: &mut Stats) -> Result<()> {
-    match event {
-        ServerEvent::SessionStarted { hello, handle, .. } => {
-            info!(
-                "streaming from {} ({})",
-                hello.display_name(),
-                hello.short_id()
-            );
-            // Start on a keyframe rather than waiting up to two seconds for one.
-            if let Err(e) = handle.request_keyframe() {
-                warn!("cannot ask for a keyframe: {e}");
-            }
-            stats.reset();
-        }
-        ServerEvent::Video { keyframe, data, .. } => {
-            stats.count(data.len(), keyframe);
-            if let Some(dump) = dump.as_mut() {
-                dump.write_all(&data)
-                    .context("cannot write the dump file")?;
-            }
-        }
-        ServerEvent::SessionEnded { reason, .. } => {
-            info!("waiting for a phone again ({reason})");
-            if let Some(dump) = dump.as_mut() {
-                dump.flush().ok();
-            }
-            stats.reset();
-        }
-        ServerEvent::StreamConfig { .. } | ServerEvent::Log { .. } => {} // Already logged.
-        ServerEvent::Stats { json, .. } => info!("phone stats: {json}"),
-        ServerEvent::Refused { peer, reason } => info!("[{peer}] turned away: {reason}"),
+/// The way into the window from the decoding thread.
+struct UiLink {
+    slot: FrameSlot,
+    proxy: EventLoopProxy<UiEvent>,
+}
+
+impl UiLink {
+    fn show(&self, frame: Nv12Frame) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame);
+        let _ = self.proxy.send_event(UiEvent::Frame);
     }
-    Ok(())
+
+    fn streaming(&self, device: String) {
+        let _ = self.proxy.send_event(UiEvent::Streaming { device });
+    }
+
+    fn idle(&self) {
+        let _ = self.proxy.send_event(UiEvent::Idle);
+    }
+}
+
+/// What the decoder is currently set up for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Format {
+    codec: Codec,
+    width: u32,
+    height: u32,
+}
+
+/// Everything that happens to a stream between the socket and the screen.
+struct Pipeline {
+    cli: Cli,
+    ui: Option<UiLink>,
+    decoder: Option<Box<dyn Decoder>>,
+    format: Option<Format>,
+    phone: Option<SessionHandle>,
+    asked_for_keyframe: Option<Instant>,
+    dump: Option<BufWriter<File>>,
+    frame_saved: bool,
+    stats: Stats,
+}
+
+impl Pipeline {
+    fn new(cli: Cli, ui: Option<UiLink>) -> Self {
+        Self {
+            cli,
+            ui,
+            decoder: None,
+            format: None,
+            phone: None,
+            asked_for_keyframe: None,
+            dump: None,
+            frame_saved: false,
+            stats: Stats::new(),
+        }
+    }
+
+    /// Runs until the server is gone. The decoder is built here and never
+    /// leaves this thread — that is what the system decoders expect.
+    fn run(mut self, events: &Receiver<ServerEvent>) -> Result<()> {
+        if let Some(path) = self.cli.dump.clone() {
+            let file = File::create(&path)
+                .with_context(|| format!("cannot write to {}", path.display()))?;
+            info!("writing the video stream to {}", path.display());
+            self.dump = Some(BufWriter::new(file));
+        }
+
+        loop {
+            match events.recv_timeout(Duration::from_millis(250)) {
+                Ok(event) => self.handle(event),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if self.stats.due() {
+                self.stats.report();
+                if let Some(dump) = self.dump.as_mut() {
+                    let _ = dump.flush();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle(&mut self, event: ServerEvent) {
+        match event {
+            ServerEvent::SessionStarted { hello, handle, .. } => {
+                let device = format!("{} ({})", hello.display_name(), hello.short_id());
+                info!("streaming from {device}");
+                self.format = Codec::parse(&hello.codec).map(|codec| Format {
+                    codec,
+                    width: hello.w,
+                    height: hello.h,
+                });
+                self.decoder = None;
+                self.phone = Some(handle);
+                self.stats.reset();
+                if let Some(ui) = &self.ui {
+                    ui.streaming(device);
+                }
+            }
+            ServerEvent::StreamConfig { config, .. } => self.reconfigure(&config),
+            ServerEvent::Video {
+                keyframe,
+                data,
+                pts_us,
+            } => {
+                self.stats.count(data.len(), keyframe);
+                if let Some(dump) = self.dump.as_mut() {
+                    if let Err(e) = dump.write_all(&data) {
+                        warn!("cannot write the dump file: {e}");
+                    }
+                }
+                self.on_video(&data, keyframe, pts_us);
+            }
+            ServerEvent::SessionEnded { reason, .. } => {
+                info!("waiting for a phone again ({reason})");
+                self.decoder = None;
+                self.phone = None;
+                self.stats.reset();
+                if let Some(dump) = self.dump.as_mut() {
+                    let _ = dump.flush();
+                }
+                if let Some(ui) = &self.ui {
+                    ui.idle();
+                }
+            }
+            ServerEvent::Stats { json, .. } => info!("phone stats: {json}"),
+            ServerEvent::Refused { peer, reason } => info!("[{peer}] turned away: {reason}"),
+            ServerEvent::Log { .. } => {} // Already in the log.
+        }
+    }
+
+    /// The phone told us what its encoder actually produces.
+    fn reconfigure(&mut self, config: &StreamConfig) {
+        let Some(codec) = Codec::parse(&config.codec) else {
+            warn!("the phone reports an unknown codec {:?}", config.codec);
+            return;
+        };
+        let format = Format {
+            codec,
+            width: config.w,
+            height: config.h,
+        };
+        if self.format.as_ref() == Some(&format) {
+            return;
+        }
+        info!(
+            "the phone is now sending {codec} {}x{}",
+            format.width, format.height
+        );
+        self.format = Some(format);
+        // The next keyframe starts a decoder for the new shape.
+        self.decoder = None;
+        self.ask_for_keyframe();
+    }
+
+    fn on_video(&mut self, access_unit: &[u8], keyframe: bool, pts_us: u64) {
+        if self.decoder.is_none() {
+            if !keyframe {
+                // A decoder that starts mid-picture produces nothing but
+                // errors; wait for a keyframe and hurry it along.
+                self.ask_for_keyframe();
+                return;
+            }
+            let Some(format) = self.format.clone() else {
+                return;
+            };
+            match decode::new_decoder(format.codec, format.width, format.height) {
+                Ok(decoder) => self.decoder = Some(decoder),
+                Err(e) => {
+                    warn!("cannot decode this stream: {e:#}");
+                    return;
+                }
+            }
+        }
+
+        let decoded = match self.decoder.as_mut() {
+            Some(decoder) => decoder.decode(access_unit, pts_us),
+            None => return,
+        };
+        match decoded {
+            Ok(Some(frame)) => {
+                self.save_first_frame(&frame);
+                if let Some(ui) = &self.ui {
+                    ui.show(frame);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!("the decoder gave up on this frame: {e:#}");
+                self.decoder = None;
+                self.ask_for_keyframe();
+            }
+        }
+    }
+
+    /// Asks the phone for a keyframe, but not more than once a second — it has
+    /// to re-encode a whole picture for each one.
+    fn ask_for_keyframe(&mut self) {
+        let Some(phone) = &self.phone else {
+            return;
+        };
+        let recent = self
+            .asked_for_keyframe
+            .is_some_and(|when| when.elapsed() < KEYFRAME_EVERY);
+        if recent {
+            return;
+        }
+        self.asked_for_keyframe = Some(Instant::now());
+        if let Err(e) = phone.request_keyframe() {
+            warn!("cannot ask the phone for a keyframe: {e}");
+        }
+    }
+
+    fn save_first_frame(&mut self, frame: &Nv12Frame) {
+        let Some(path) = self.cli.save_frame.clone() else {
+            return;
+        };
+        if self.frame_saved {
+            return;
+        }
+        self.frame_saved = true;
+        match save_ppm(frame, &path) {
+            Ok(()) => info!(
+                "wrote a {}x{} picture to {}",
+                frame.width,
+                frame.height,
+                path.display()
+            ),
+            Err(e) => warn!("cannot write {}: {e:#}", path.display()),
+        }
+    }
+}
+
+/// Writes a picture as a plain PPM — no image library, and every viewer and
+/// converter reads it.
+fn save_ppm(frame: &Nv12Frame, path: &Path) -> Result<()> {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    let mut pixels = vec![0u32; width * height];
+    frame.blit_fit(&mut pixels, frame.width, frame.height, 0);
+
+    let mut out = Vec::with_capacity(width * height * 3 + 32);
+    out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+    for pixel in &pixels {
+        out.push((pixel >> 16) as u8);
+        out.push((pixel >> 8) as u8);
+        out.push(*pixel as u8);
+    }
+    fs::write(path, out).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// Frames and bytes since the last report.

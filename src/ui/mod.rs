@@ -1,3 +1,9 @@
-//! The window (waiting, consent, streaming), the tray icon and the QR code.
+//! The window: the phone's screen, and the waiting state before it arrives.
 //!
-//! Empty until the window lands; the receiver currently runs headless.
+//! The tray icon, the QR code and the consent dialog land here too; for now
+//! this is the picture and a stable title, which is what a capture program
+//! needs to hold on to us across reconnects.
+
+mod window;
+
+pub use window::{run, FrameSlot, UiEvent};
