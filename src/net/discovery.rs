@@ -54,6 +54,58 @@ impl Interfaces {
     }
 }
 
+/// The addresses a phone on the same network could reach this computer on:
+/// every IPv4 that is not loopback, with the interface it belongs to. On a
+/// laptop with Wi-Fi and a dock this is where the choice comes from.
+pub fn local_addresses() -> Vec<IpAddr> {
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        warn!("cannot list this computer's network addresses");
+        return Vec::new();
+    };
+    let mut candidates: Vec<(u8, IpAddr)> = interfaces
+        .into_iter()
+        .filter(|interface| !interface.is_loopback())
+        .filter_map(|interface| match interface.ip() {
+            IpAddr::V4(address) => Some((rank(&interface.name, address), IpAddr::V4(address))),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    candidates.sort();
+    candidates.dedup_by_key(|(_, address)| *address);
+    candidates.into_iter().map(|(_, address)| address).collect()
+}
+
+/// How likely a phone on the same Wi-Fi is to reach this address; lower comes
+/// first. A machine with WSL, a VPN and a docking station has half a dozen
+/// addresses, and only one of them is the one to put in a QR code.
+fn rank(interface: &str, address: std::net::Ipv4Addr) -> u8 {
+    const SYNTHETIC: [&str; 11] = [
+        "vethernet",
+        "wsl",
+        "hyper-v",
+        "virtualbox",
+        "vmware",
+        "docker",
+        "vpn",
+        "tailscale",
+        "zerotier",
+        "tun",
+        "tap",
+    ];
+    let name = interface.to_ascii_lowercase();
+    let made_up = SYNTHETIC.iter().any(|marker| name.contains(marker));
+    if address.is_link_local() {
+        // 169.254.x means the interface never got an address at all.
+        return 3;
+    }
+    match (address.is_private(), made_up) {
+        (true, false) => 0,
+        (true, true) => 1,
+        (false, false) => 2,
+        (false, true) => 3,
+    }
+}
+
 /// A live `_nearscreen._tcp` announcement. Dropping it takes the receiver off
 /// the network again.
 pub struct Advertisement {
@@ -171,6 +223,20 @@ mod tests {
         assert_eq!(host_label("home-pc"), "home-pc");
         assert_eq!(host_label("..."), "nearscreen");
         assert!(host_label(&"x".repeat(100)).len() <= 63);
+    }
+
+    #[test]
+    fn the_home_network_wins_over_wsl_and_a_dead_interface() {
+        let home = rank("Ethernet 3", "192.168.10.202".parse().unwrap());
+        let wsl = rank(
+            "vEthernet (WSL (Hyper-V firewall))",
+            "172.20.128.1".parse().unwrap(),
+        );
+        let unplugged = rank("Ethernet 2", "169.254.118.60".parse().unwrap());
+        let vpn = rank("ZoogVPN Network Adapter", "10.8.0.2".parse().unwrap());
+        assert!(home < wsl, "the real network comes first");
+        assert!(home < vpn, "a VPN is not where the phone is");
+        assert!(wsl < unplugged, "an interface with no address comes last");
     }
 
     #[test]

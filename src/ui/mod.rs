@@ -4,6 +4,10 @@
 //! this is the picture and a stable title, which is what a capture program
 //! needs to hold on to us across reconnects.
 
+mod logo;
+mod paint;
+mod text;
+mod waiting;
 mod window;
 
-pub use window::{run, FrameSlot, UiEvent};
+pub use window::{run, FrameSlot, UiEvent, WindowConfig};

@@ -8,7 +8,7 @@ pub mod protocol;
 mod server;
 mod session;
 
-pub use discovery::{Advertisement, Interfaces};
+pub use discovery::{local_addresses, Advertisement, Interfaces};
 pub use protocol::{Codec, Hello, HelloReply, Params, StreamConfig, DEFAULT_PORT};
 pub use server::{
     hostname, Admission, AdmissionFn, AllowAll, Decision, Server, ServerEvent, ServerOptions,

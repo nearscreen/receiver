@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{mpsc, Arc, Mutex};
@@ -16,10 +17,10 @@ use winit::event_loop::EventLoopProxy;
 use nearscreen_receiver::config::Config;
 use nearscreen_receiver::decode::{self, Decoder, Nv12Frame};
 use nearscreen_receiver::net::{
-    hostname, Advertisement, AllowAll, Codec, Interfaces, Server, ServerEvent, ServerOptions,
-    SessionHandle, StreamConfig, DEFAULT_PORT,
+    hostname, local_addresses, Advertisement, AllowAll, Codec, Interfaces, Server, ServerEvent,
+    ServerOptions, SessionHandle, StreamConfig, DEFAULT_PORT,
 };
-use nearscreen_receiver::ui::{self, FrameSlot, UiEvent};
+use nearscreen_receiver::ui::{self, FrameSlot, UiEvent, WindowConfig};
 
 /// How often the running statistics are printed.
 const REPORT_EVERY: Duration = Duration::from_secs(2);
@@ -113,7 +114,12 @@ fn main() -> Result<()> {
 
     let frames: FrameSlot = Arc::new(Mutex::new(None));
     let slot = frames.clone();
-    ui::run(frames, move |proxy| {
+    let window = WindowConfig {
+        name: name.clone(),
+        addresses: preferred_first(local_addresses(), config.preferred_interface.as_deref()),
+        port,
+    };
+    ui::run(window, frames, move |proxy| {
         let link = UiLink { slot, proxy };
         let started = thread::Builder::new()
             .name("nearscreen-decode".to_string())
@@ -200,6 +206,10 @@ impl UiLink {
     fn idle(&self) {
         let _ = self.proxy.send_event(UiEvent::Idle);
     }
+
+    fn rate(&self, summary: String) {
+        let _ = self.proxy.send_event(UiEvent::Rate { summary });
+    }
 }
 
 /// What the decoder is currently set up for.
@@ -255,7 +265,10 @@ impl Pipeline {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             if self.stats.due() {
-                self.stats.report();
+                let codec = self.format.as_ref().map(|format| format.codec);
+                if let (Some(summary), Some(ui)) = (self.stats.report(codec), self.ui.as_ref()) {
+                    ui.rate(summary);
+                }
                 if let Some(dump) = self.dump.as_mut() {
                     let _ = dump.flush();
                 }
@@ -466,20 +479,49 @@ impl Stats {
         self.since.elapsed() >= REPORT_EVERY
     }
 
-    fn report(&mut self) {
+    /// Logs how the stream is doing and returns the same in the words the
+    /// overlay uses.
+    fn report(&mut self, codec: Option<Codec>) -> Option<String> {
         let seconds = self.since.elapsed().as_secs_f64();
-        if self.frames > 0 && seconds > 0.0 {
+        let summary = if self.frames > 0 && seconds > 0.0 {
+            let fps = f64::from(self.frames) / seconds;
+            let mbits = self.bytes as f64 * 8.0 / seconds / 1e6;
             info!(
-                "{:.1} fps  {:.2} Mbit/s  {} keyframes",
-                f64::from(self.frames) / seconds,
-                self.bytes as f64 * 8.0 / seconds / 1e6,
+                "{fps:.1} fps  {mbits:.2} Mbit/s  {} keyframes",
                 self.keyframes
             );
-        }
+            Some(match codec {
+                Some(codec) => format!("{fps:.0} fps · {mbits:.1} Mbit/s · {}", spoken(codec)),
+                None => format!("{fps:.0} fps · {mbits:.1} Mbit/s"),
+            })
+        } else {
+            None
+        };
         self.since = Instant::now();
         self.frames = 0;
         self.keyframes = 0;
         self.bytes = 0;
+        summary
+    }
+}
+
+/// Puts the address from the settings file first, when it is one this computer
+/// actually has — the person who set it knows which network the phone is on.
+fn preferred_first(mut addresses: Vec<IpAddr>, preferred: Option<&str>) -> Vec<IpAddr> {
+    let Some(preferred) = preferred.and_then(|value| value.parse::<IpAddr>().ok()) else {
+        return addresses;
+    };
+    if let Some(index) = addresses.iter().position(|address| *address == preferred) {
+        addresses.swap(0, index);
+    }
+    addresses
+}
+
+/// The codec, spelled the way people write it.
+fn spoken(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "H.264",
+        Codec::Hevc => "HEVC",
     }
 }
 
