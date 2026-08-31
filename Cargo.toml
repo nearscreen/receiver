@@ -21,6 +21,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 softbuffer = "0.4.8"
 swash = "0.2.10"
+tray-icon = "0.24.2"
 winit = "0.30.13"
 
 [profile.release]
@@ -29,4 +30,4 @@ codegen-units = 1
 strip = true
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.61.3", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Media_KernelStreaming"] }
+windows = { version = "0.61.3", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Media_KernelStreaming", "Win32_System_Registry"] }

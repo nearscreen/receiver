@@ -14,6 +14,7 @@ use clap::Parser;
 use log::{error, info, warn};
 use winit::event_loop::EventLoopProxy;
 
+use nearscreen_receiver::autostart;
 use nearscreen_receiver::config::Config;
 use nearscreen_receiver::consent::{Answer, Ask, Consent};
 use nearscreen_receiver::decode::{self, Decoder, Nv12Frame};
@@ -112,7 +113,15 @@ fn main() -> Result<()> {
     // person's decision outlives the connection that prompted it.
     let (questions_tx, questions_rx) = mpsc::channel::<(String, String)>();
     let (answers_tx, answers_rx) = mpsc::channel::<(String, String, Answer)>();
-    let consent = Consent::new(config.clone(), Box::new(AskTheWindow(questions_tx)));
+    // A settings file that says "start at login" should mean it, even if it
+    // was copied here from another computer.
+    if config.start_at_login && !autostart::is_enabled() {
+        if let Err(e) = autostart::set(true) {
+            warn!("cannot add the receiver to the startup list: {e:#}");
+        }
+    }
+    let settings = Arc::new(Mutex::new(config.clone()));
+    let consent = Consent::new(settings.clone(), Box::new(AskTheWindow(questions_tx)));
     {
         let consent = consent.clone();
         thread::Builder::new()
@@ -138,6 +147,7 @@ fn main() -> Result<()> {
         name: name.clone(),
         addresses: preferred_first(local_addresses(), config.preferred_interface.as_deref()),
         port,
+        settings,
     };
     ui::run(window, frames, move |proxy| {
         {

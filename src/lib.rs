@@ -8,6 +8,7 @@
 //! - [`config`] — the settings file.
 //! - [`consent`] — who is allowed to stream here.
 
+pub mod autostart;
 pub mod config;
 pub mod consent;
 pub mod decode;

@@ -54,16 +54,16 @@ enum Verdict {
 
 /// The gate every phone passes through.
 pub struct Consent {
-    settings: Mutex<Config>,
+    settings: Arc<Mutex<Config>>,
     verdicts: Mutex<HashMap<String, Verdict>>,
     answered: Condvar,
     ask: Box<dyn Ask>,
 }
 
 impl Consent {
-    pub fn new(settings: Config, ask: Box<dyn Ask>) -> Arc<Self> {
+    pub fn new(settings: Arc<Mutex<Config>>, ask: Box<dyn Ask>) -> Arc<Self> {
         Arc::new(Self {
-            settings: Mutex::new(settings),
+            settings,
             verdicts: Mutex::new(HashMap::new()),
             answered: Condvar::new(),
             ask,
@@ -173,7 +173,13 @@ mod tests {
 
     fn consent() -> (Arc<Consent>, Receiver<(String, String)>) {
         let (tx, rx) = channel();
-        (Consent::new(Config::default(), Box::new(Recorder(tx))), rx)
+        (
+            Consent::new(
+                Arc::new(Mutex::new(Config::default())),
+                Box::new(Recorder(tx)),
+            ),
+            rx,
+        )
     }
 
     fn hello(id: &str) -> Hello {
@@ -202,7 +208,7 @@ mod tests {
         let (tx, _rx) = channel();
         let mut settings = Config::default();
         settings.allow("KNOWN", "Ira iPhone");
-        let consent = Consent::new(settings, Box::new(Recorder(tx)));
+        let consent = Consent::new(Arc::new(Mutex::new(settings)), Box::new(Recorder(tx)));
         assert!(matches!(
             consent.admit(&hello("KNOWN"), peer()),
             Decision::Allow

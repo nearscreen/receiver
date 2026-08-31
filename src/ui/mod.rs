@@ -8,7 +8,9 @@ mod logo;
 mod paint;
 mod question;
 mod text;
+mod tray;
 mod waiting;
 mod window;
 
+pub use tray::Choice;
 pub use window::{run, FrameSlot, UiEvent, WindowConfig};

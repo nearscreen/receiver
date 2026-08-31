@@ -22,7 +22,10 @@ use winit::window::{Fullscreen, UserAttentionType, Window, WindowId};
 use super::paint::{colour, Canvas, Paint, Rect};
 use super::question::Question;
 use super::text::{Style, Text, BOLD, REGULAR};
+use super::tray::{Choice, Tray};
 use super::waiting::Waiting;
+use crate::autostart;
+use crate::config::Config;
 use crate::consent::Answer;
 use crate::decode::Nv12Frame;
 
@@ -40,6 +43,8 @@ pub struct WindowConfig {
     pub name: String,
     pub addresses: Vec<IpAddr>,
     pub port: u16,
+    /// Shared with the consent gate: one settings file, one object.
+    pub settings: Arc<Mutex<Config>>,
 }
 
 /// What the rest of the program tells the window.
@@ -53,6 +58,8 @@ pub enum UiEvent {
     Rate { summary: String },
     /// The stream ended. The title stays as it was, on purpose.
     Idle,
+    /// Something was picked from the tray menu.
+    Menu(Choice),
     /// A phone nobody has said yes to yet is at the door.
     Ask {
         device: String,
@@ -78,6 +85,12 @@ pub fn run(
     start(event_loop.create_proxy());
 
     let mut app = App {
+        proxy: event_loop.create_proxy(),
+        settings: config.settings.clone(),
+        tray: None,
+        visible: true,
+        borderless: false,
+        start_at_login: autostart::is_enabled(),
         frames,
         text: Text::new(),
         waiting: Waiting::new(config.name, config.addresses, config.port),
@@ -101,6 +114,12 @@ pub fn run(
 }
 
 struct App {
+    proxy: EventLoopProxy<UiEvent>,
+    settings: Arc<Mutex<Config>>,
+    tray: Option<Tray>,
+    visible: bool,
+    borderless: bool,
+    start_at_login: bool,
     frames: FrameSlot,
     text: Option<Text>,
     waiting: Waiting,
@@ -208,6 +227,52 @@ impl App {
         });
     }
 
+    fn show_window(&mut self, shown: bool) {
+        self.visible = shown;
+        if let Some(window) = &self.window {
+            window.set_visible(shown);
+            if shown {
+                window.focus_window();
+            }
+        }
+        if let Some(tray) = &self.tray {
+            tray.set_window_shown(shown);
+        }
+    }
+
+    fn on_menu(&mut self, choice: Choice, event_loop: &ActiveEventLoop) {
+        match choice {
+            Choice::ShowHide => self.show_window(!self.visible),
+            Choice::Borderless => {
+                self.borderless = !self.borderless;
+                if let Some(window) = &self.window {
+                    window.set_decorations(!self.borderless);
+                }
+                if let Some(tray) = &self.tray {
+                    tray.set_borderless(self.borderless);
+                }
+            }
+            Choice::StartAtLogin => {
+                let wanted = !self.start_at_login;
+                match autostart::set(wanted) {
+                    Ok(()) => {
+                        self.start_at_login = wanted;
+                        let mut settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+                        settings.start_at_login = wanted;
+                        if let Err(e) = settings.save() {
+                            warn!("cannot write the settings file: {e:#}");
+                        }
+                    }
+                    Err(e) => warn!("cannot change the startup list: {e:#}"),
+                }
+                if let Some(tray) = &self.tray {
+                    tray.set_start_at_login(self.start_at_login);
+                }
+            }
+            Choice::Quit => event_loop.exit(),
+        }
+    }
+
     /// Sends the answer and takes the question off the screen.
     fn answer(&mut self, answer: Answer) {
         if let Some(question) = self.question.take() {
@@ -286,6 +351,15 @@ impl ApplicationHandler<UiEvent> for App {
         }
         self.context = Some(context);
         self.window = Some(window);
+
+        let proxy = self.proxy.clone();
+        match Tray::new(self.start_at_login, move |choice| {
+            let _ = proxy.send_event(UiEvent::Menu(choice));
+        }) {
+            Ok(tray) => self.tray = Some(tray),
+            // A desktop without a tray is unusual but not a reason to stop.
+            Err(e) => warn!("no tray icon: {e:#}"),
+        }
         debug!("window ready");
     }
 
@@ -296,12 +370,19 @@ impl ApplicationHandler<UiEvent> for App {
                 self.set_title(format!("{IDLE_TITLE} — {device}"));
                 self.device = Some(device);
                 self.rate = None;
+                if let Some(tray) = &self.tray {
+                    tray.set_streaming(true);
+                }
             }
             UiEvent::Rate { summary } => self.rate = Some(summary),
             UiEvent::Idle => {
                 // The title is left alone so a capture source keeps its target.
                 self.rate = None;
+                if let Some(tray) = &self.tray {
+                    tray.set_streaming(false);
+                }
             }
+            UiEvent::Menu(choice) => self.on_menu(choice, _event_loop),
             UiEvent::Ask { device, id, answer } => {
                 self.question = Some(Question::new(device, id, answer));
                 if let Some(window) = &self.window {
@@ -315,7 +396,20 @@ impl ApplicationHandler<UiEvent> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                let streaming = self
+                    .frames
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some();
+                if streaming {
+                    // The phone is still showing its screen: get out of the
+                    // way rather than cutting it off.
+                    self.show_window(false);
+                } else {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::Resized(_) => self.redraw(),
             WindowEvent::CursorEntered { .. } => {
