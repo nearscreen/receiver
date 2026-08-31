@@ -17,7 +17,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Fullscreen, UserAttentionType, Window, WindowId};
+use winit::window::{Fullscreen, Icon, UserAttentionType, Window, WindowId};
 
 use super::paint::{colour, Canvas, Paint, Rect};
 use super::question::Question;
@@ -320,8 +320,12 @@ impl ApplicationHandler<UiEvent> for App {
         if self.window.is_some() {
             return;
         }
+        // 64 is what Windows asks for in Alt-Tab; it scales down cleanly for
+        // the taskbar and the title bar.
+        let icon = Icon::from_rgba(super::icon_pixels(64, false), 64, 64).ok();
         let attributes = Window::default_attributes()
             .with_title(&self.title)
+            .with_window_icon(icon)
             // A phone screen is tall; start with something of that shape.
             .with_inner_size(LogicalSize::new(460.0, 900.0))
             .with_min_inner_size(LogicalSize::new(280.0, 320.0));

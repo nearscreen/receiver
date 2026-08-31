@@ -282,6 +282,28 @@ impl<'a> Canvas<'a> {
     }
 }
 
+/// Coverage of a rounded box over a whole grid of pixels — the shape an icon
+/// is cut out of, so its corners are transparent rather than dark.
+pub fn round_rect_mask(width: u32, height: u32, rect: Rect, radius: f32) -> Vec<u8> {
+    let mut mask = vec![0u8; (width * height) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let distance = round_rect_distance(
+                x as f32 + 0.5,
+                y as f32 + 0.5,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                radius,
+            );
+            let coverage = (0.5 - distance).clamp(0.0, 1.0);
+            mask[(y * width + x) as usize] = (coverage * 255.0).round() as u8;
+        }
+    }
+    mask
+}
+
 /// Flattens a quadratic curve — the shape of the logo's waves — into points.
 pub fn quadratic(
     from: (f32, f32),

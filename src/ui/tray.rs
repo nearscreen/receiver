@@ -6,9 +6,6 @@ use log::debug;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use super::logo;
-use super::paint::{colour, Canvas, Paint};
-
 /// Icons are small; the mark is drawn into this square.
 const ICON_SIZE: u32 = 32;
 
@@ -104,30 +101,7 @@ impl Tray {
 
 /// The mark, small, with a live dot when a phone is streaming.
 fn draw_icon(streaming: bool) -> Result<Icon> {
-    let mut pixels = vec![colour::BACKGROUND; (ICON_SIZE * ICON_SIZE) as usize];
-    {
-        let mut canvas = Canvas::new(&mut pixels, ICON_SIZE, ICON_SIZE);
-        logo::draw(&mut canvas, 1.0, 1.0, ICON_SIZE as f32 - 2.0);
-        if streaming {
-            canvas.fill_circle(
-                ICON_SIZE as f32 - 6.0,
-                ICON_SIZE as f32 - 6.0,
-                5.0,
-                Paint::Solid(colour::ACCENT),
-            );
-        }
-    }
-    let rgba: Vec<u8> = pixels
-        .iter()
-        .flat_map(|pixel| {
-            [
-                (pixel >> 16) as u8,
-                (pixel >> 8) as u8,
-                *pixel as u8,
-                u8::MAX,
-            ]
-        })
-        .collect();
+    let rgba = super::icon_pixels(ICON_SIZE, streaming);
     Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).context("cannot draw the tray icon")
 }
 

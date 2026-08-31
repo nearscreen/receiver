@@ -45,6 +45,18 @@ jobs:
         run: |
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
+      - name: Draw the icons
+        run: |
+          cargo run --example make-icons
+          mkdir Nearscreen.iconset
+          for size in 16 32 128 256 512; do
+            cp "packaging/icons/icon-$size.png" "Nearscreen.iconset/icon_${size}x${size}.png"
+          done
+          for size in 16 32 128 256 512; do
+            double=$((size * 2))
+            cp "packaging/icons/icon-$double.png"               "Nearscreen.iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns Nearscreen.iconset -o Nearscreen.icns
       - name: Make the app
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -56,6 +68,7 @@ jobs:
           sed -e "s/__VERSION__/$version/g" packaging/macos/Info.plist \
             > "$app/Contents/Info.plist"
           cp README.md LICENSE PROTOCOL.md "$app/Contents/Resources/"
+          cp Nearscreen.icns "$app/Contents/Resources/"
           # Unsigned for now: a Developer ID certificate turns this into a
           # notarised build without changing anything else here.
           codesign --force --deep --sign - "$app" || true
