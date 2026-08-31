@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -61,6 +61,10 @@ pub enum UiEvent {
     Idle,
     /// Something was picked from the tray menu.
     Menu(Choice),
+    /// Someone asked the receiver to stop — Ctrl-C, or the system shutting
+    /// down. The window closes so that the announcement is withdrawn on the
+    /// way out instead of being left for phones to trip over.
+    Quit,
     /// A phone nobody has said yes to yet is at the door.
     Ask {
         device: String,
@@ -397,6 +401,10 @@ impl ApplicationHandler<UiEvent> for App {
                 }
             }
             UiEvent::Menu(choice) => self.on_menu(choice, _event_loop),
+            UiEvent::Quit => {
+                info!("stopping");
+                _event_loop.exit();
+            }
             UiEvent::Ask { device, id, answer } => {
                 self.questions.push_back(Question::new(device, id, answer));
                 if let Some(window) = &self.window {

@@ -211,6 +211,7 @@ impl Drop for Advertisement {
         match self.daemon.unregister(&self.fullname) {
             Ok(status) => {
                 let _ = status.recv_timeout(GOODBYE_TIMEOUT);
+                debug!("withdrew the announcement");
             }
             Err(e) => warn!("cannot withdraw the announcement: {e}"),
         }

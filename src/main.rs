@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -105,8 +106,17 @@ fn main() -> Result<()> {
         let port = server.local_addr().port();
         announce(&cli, &config, &name, port, codec);
         info!("no window: every phone that connects is let straight in");
+        // Held until the end of this scope: dropping it tells the network we
+        // have gone, rather than leaving phones to time the record out.
         let _advertisement = start_advertisement(&cli, &config, &name, port);
-        return Pipeline::new(cli, None).run(&events_rx);
+        let stopping = Arc::new(AtomicBool::new(false));
+        {
+            let stopping = stopping.clone();
+            if let Err(e) = ctrlc::set_handler(move || stopping.store(true, Ordering::SeqCst)) {
+                warn!("Ctrl-C will not be handled tidily: {e}");
+            }
+        }
+        return Pipeline::new(cli, None).run(&events_rx, &stopping);
     }
 
     // The question goes to the window and the answer comes back, so that the
@@ -151,6 +161,16 @@ fn main() -> Result<()> {
     };
     ui::run(window, frames, move |proxy| {
         {
+            // Ctrl-C closes the window, which withdraws the announcement on
+            // the way out.
+            let proxy = proxy.clone();
+            if let Err(e) = ctrlc::set_handler(move || {
+                let _ = proxy.send_event(UiEvent::Quit);
+            }) {
+                warn!("Ctrl-C will not be handled tidily: {e}");
+            }
+        }
+        {
             let proxy = proxy.clone();
             let started = thread::Builder::new()
                 .name("nearscreen-questions".to_string())
@@ -172,7 +192,8 @@ fn main() -> Result<()> {
         let started = thread::Builder::new()
             .name("nearscreen-decode".to_string())
             .spawn(move || {
-                if let Err(e) = Pipeline::new(cli, Some(link)).run(&events_rx) {
+                let running = Arc::new(AtomicBool::new(false));
+                if let Err(e) = Pipeline::new(cli, Some(link)).run(&events_rx, &running) {
                     error!("{e:#}");
                 }
             });
@@ -321,7 +342,7 @@ impl Pipeline {
 
     /// Runs until the server is gone. The decoder is built here and never
     /// leaves this thread — that is what the system decoders expect.
-    fn run(mut self, events: &Receiver<ServerEvent>) -> Result<()> {
+    fn run(mut self, events: &Receiver<ServerEvent>, stopping: &AtomicBool) -> Result<()> {
         if let Some(path) = self.cli.dump.clone() {
             let file = File::create(&path)
                 .with_context(|| format!("cannot write to {}", path.display()))?;
@@ -330,6 +351,10 @@ impl Pipeline {
         }
 
         loop {
+            if stopping.load(Ordering::SeqCst) {
+                info!("stopping");
+                break;
+            }
             match events.recv_timeout(Duration::from_millis(250)) {
                 Ok(event) => self.handle(event),
                 Err(RecvTimeoutError::Timeout) => {}
