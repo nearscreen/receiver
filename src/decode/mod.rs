@@ -2,10 +2,13 @@
 //! system already has — Media Foundation on Windows, VideoToolbox on macOS.
 //! No external media libraries, nothing for anyone to install.
 
+pub mod annexb;
 pub mod nv12;
 
 #[cfg(windows)]
 mod media_foundation;
+#[cfg(target_os = "macos")]
+mod video_toolbox;
 
 use anyhow::Result;
 
@@ -33,7 +36,12 @@ pub fn new_decoder(codec: Codec, width: u32, height: u32) -> Result<Box<dyn Deco
         let decoder = media_foundation::MediaFoundationDecoder::new(codec, width, height)?;
         Ok(Box::new(decoder))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let decoder = video_toolbox::VideoToolboxDecoder::new(codec, width, height)?;
+        Ok(Box::new(decoder))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (codec, width, height);
         anyhow::bail!("this platform has no decoder yet")
@@ -48,7 +56,11 @@ pub fn is_supported(codec: Codec) -> bool {
     {
         media_foundation::is_supported(codec)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        video_toolbox::is_supported(codec)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = codec;
         false

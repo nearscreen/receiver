@@ -1,0 +1,7 @@
+# One line ending everywhere, whatever the contributor is working on.
+* text=auto eol=lf
+
+# Fonts and images are not text.
+*.ttf binary
+*.png binary
+*.icns binary

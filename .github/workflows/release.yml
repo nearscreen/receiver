@@ -1,0 +1,69 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: windows-x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target\release\nearscreen-receiver.exe dist\
+          Copy-Item README.md, LICENSE, PROTOCOL.md dist\
+          Compress-Archive -Path dist\* -DestinationPath nearscreen-receiver-windows-x64.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: nearscreen-receiver-windows-x64.zip
+          fail_on_unmatched_files: true
+
+  macos:
+    name: macos-universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build for both kinds of Mac
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Make the app
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          app="Nearscreen Receiver.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/nearscreen-receiver" \
+            target/aarch64-apple-darwin/release/nearscreen-receiver \
+            target/x86_64-apple-darwin/release/nearscreen-receiver
+          sed -e "s/__VERSION__/$version/g" packaging/macos/Info.plist \
+            > "$app/Contents/Info.plist"
+          cp README.md LICENSE PROTOCOL.md "$app/Contents/Resources/"
+          # Unsigned for now: a Developer ID certificate turns this into a
+          # notarised build without changing anything else here.
+          codesign --force --deep --sign - "$app" || true
+          mkdir dmg && cp -R "$app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Nearscreen Receiver" -srcfolder dmg \
+            -ov -format UDZO nearscreen-receiver-macos.dmg
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: nearscreen-receiver-macos.dmg
+          fail_on_unmatched_files: true

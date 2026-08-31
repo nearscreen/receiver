@@ -12,8 +12,10 @@ looking at it.
 ## Quick start
 
 1. **Download** the receiver for
-   [Windows]([RELEASE URL]) or [macOS]([RELEASE URL]) and run it.
-   Windows will ask once to allow it on your private network — click *Allow*.
+   [Windows](https://github.com/nearscreen/receiver/releases/latest) or
+   [macOS](https://github.com/nearscreen/receiver/releases/latest) and run it.
+   Windows asks once to allow it on your private network — click *Allow*.
+   macOS asks once for permission to talk to devices on your local network.
 2. **Install Nearscreen** on your iPhone from the
    [App Store]([APP STORE URL]).
 3. Open the app — your computer shows up by name. Tap the big button,
@@ -33,6 +35,13 @@ opens already connected.
   are remembered.
 - The receiver makes **no outbound connections**. No cloud, no telemetry,
   no update checks. Grep the source.
+
+## When your network hides devices from each other
+
+Guest Wi-Fi, dorms and many office networks block the discovery traffic that
+lets the phone find this computer. The receiver's window shows a QR code for
+exactly this: point the iPhone camera at it and the app opens already
+pointed at this computer.
 
 ## Capture it in OBS
 

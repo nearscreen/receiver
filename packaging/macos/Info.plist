@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Nearscreen Receiver</string>
+	<key>CFBundleDisplayName</key>
+	<string>Nearscreen Receiver</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.nearscreen.receiver</string>
+	<key>CFBundleExecutable</key>
+	<string>nearscreen-receiver</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- macOS asks before letting an app talk to the network it is on. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nearscreen Receiver waits for your iPhone to send its screen over this network. Nothing leaves it.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_nearscreen._tcp</string>
+	</array>
+</dict>
+</plist>
