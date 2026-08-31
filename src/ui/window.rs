@@ -364,7 +364,14 @@ impl ApplicationHandler<UiEvent> for App {
             // A desktop without a tray is unusual but not a reason to stop.
             Err(e) => warn!("no tray icon: {e:#}"),
         }
-        debug!("window ready");
+        if let Some(window) = &self.window {
+            debug!(
+                "window ready at {:?}, {:?} at scale {}",
+                window.outer_position().ok(),
+                window.inner_size(),
+                window.scale_factor()
+            );
+        }
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UiEvent) {
