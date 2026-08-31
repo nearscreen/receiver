@@ -20,6 +20,11 @@ looking at it.
    [macOS](https://github.com/nearscreen/receiver/releases/latest) and run it.
    Windows asks once to allow it on your private network — click *Allow*.
    macOS asks once for permission to talk to devices on your local network.
+
+   The Mac build is not notarised yet, so the first launch needs
+   Control-click → *Open* rather than a double click. That changes as soon as
+   the project has an Apple Developer certificate; nothing about the app
+   changes with it.
 2. **Install Nearscreen** on your iPhone from the
    [App Store]([APP STORE URL]).
 3. Open the app — your computer shows up by name. Tap the big button,
