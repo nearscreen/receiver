@@ -15,6 +15,7 @@ use log::{error, info, warn};
 use winit::event_loop::EventLoopProxy;
 
 use nearscreen_receiver::config::Config;
+use nearscreen_receiver::consent::{Answer, Ask, Consent};
 use nearscreen_receiver::decode::{self, Decoder, Nv12Frame};
 use nearscreen_receiver::net::{
     hostname, local_addresses, Advertisement, AllowAll, Codec, Interfaces, Server, ServerEvent,
@@ -95,22 +96,41 @@ fn main() -> Result<()> {
         ..ServerOptions::default()
     };
     let name = options.name.clone();
-
     let (events_tx, events_rx) = mpsc::channel();
-    let server = Server::start(options, Arc::new(AllowAll), events_tx)?;
-    let port = server.local_addr().port();
-    info!("listening on port {port} as \"{name}\", asking for {codec}");
-    if port != DEFAULT_PORT {
-        info!("this is not the default port {DEFAULT_PORT} — the phone needs it in its settings");
+
+    if cli.headless {
+        // Nobody can be asked without a window, so nobody is.
+        let server = Server::start(options, Arc::new(AllowAll), events_tx)?;
+        let port = server.local_addr().port();
+        announce(&cli, &config, &name, port, codec);
+        info!("no window: every phone that connects is let straight in");
+        let _advertisement = start_advertisement(&cli, &config, &name, port);
+        return Pipeline::new(cli, None).run(&events_rx);
     }
 
+    // The question goes to the window and the answer comes back, so that the
+    // person's decision outlives the connection that prompted it.
+    let (questions_tx, questions_rx) = mpsc::channel::<(String, String)>();
+    let (answers_tx, answers_rx) = mpsc::channel::<(String, String, Answer)>();
+    let consent = Consent::new(config.clone(), Box::new(AskTheWindow(questions_tx)));
+    {
+        let consent = consent.clone();
+        thread::Builder::new()
+            .name("nearscreen-consent".to_string())
+            .spawn(move || {
+                while let Ok((id, device, answer)) = answers_rx.recv() {
+                    consent.record(&id, &device, answer);
+                }
+            })
+            .context("cannot start the consent thread")?;
+    }
+
+    let server = Server::start(options, consent, events_tx)?;
+    let port = server.local_addr().port();
+    announce(&cli, &config, &name, port, codec);
     // Kept alive for as long as the receiver runs; dropping it withdraws the
     // announcement.
     let _advertisement = start_advertisement(&cli, &config, &name, port);
-
-    if cli.headless {
-        return Pipeline::new(cli, None).run(&events_rx);
-    }
 
     let frames: FrameSlot = Arc::new(Mutex::new(None));
     let slot = frames.clone();
@@ -120,6 +140,24 @@ fn main() -> Result<()> {
         port,
     };
     ui::run(window, frames, move |proxy| {
+        {
+            let proxy = proxy.clone();
+            let started = thread::Builder::new()
+                .name("nearscreen-questions".to_string())
+                .spawn(move || {
+                    while let Ok((device, id)) = questions_rx.recv() {
+                        let _ = proxy.send_event(UiEvent::Ask {
+                            device,
+                            id,
+                            answer: answers_tx.clone(),
+                        });
+                    }
+                });
+            if let Err(e) = started {
+                error!("cannot start the consent thread: {e}");
+            }
+        }
+
         let link = UiLink { slot, proxy };
         let started = thread::Builder::new()
             .name("nearscreen-decode".to_string())
@@ -132,6 +170,29 @@ fn main() -> Result<()> {
             error!("cannot start the decoding thread: {e}");
         }
     })
+}
+
+/// Says where the receiver is listening, in the log.
+fn announce(cli: &Cli, _config: &Config, name: &str, port: u16, codec: Codec) {
+    info!("listening on port {port} as \"{name}\", asking for {codec}");
+    if port != DEFAULT_PORT {
+        info!("this is not the default port {DEFAULT_PORT} — the phone needs it in its settings");
+    }
+    if cli.no_mdns {
+        info!("phones will need this computer's address: discovery is off");
+    }
+}
+
+/// Carries the question from whichever thread is holding a phone at the door
+/// to the window, which is on a thread of its own.
+struct AskTheWindow(mpsc::Sender<(String, String)>);
+
+impl Ask for AskTheWindow {
+    fn ask(&self, device: &str, id: &str) {
+        if self.0.send((device.to_string(), id.to_string())).is_err() {
+            warn!("nobody is there to ask about {device}");
+        }
+    }
 }
 
 /// The codec we ask the phone for — never one this computer cannot decode.

@@ -14,13 +14,16 @@ use log::{debug, error, warn};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Fullscreen, UserAttentionType, Window, WindowId};
 
 use super::paint::{colour, Canvas, Paint, Rect};
+use super::question::Question;
 use super::text::{Style, Text, BOLD, REGULAR};
 use super::waiting::Waiting;
+use crate::consent::Answer;
 use crate::decode::Nv12Frame;
 
 /// What the window is called before any phone has arrived.
@@ -50,6 +53,12 @@ pub enum UiEvent {
     Rate { summary: String },
     /// The stream ended. The title stays as it was, on purpose.
     Idle,
+    /// A phone nobody has said yes to yet is at the door.
+    Ask {
+        device: String,
+        id: String,
+        answer: std::sync::mpsc::Sender<(String, String, Answer)>,
+    },
 }
 
 /// Opens the window and runs until the person closes it.
@@ -75,6 +84,8 @@ pub fn run(
         title: IDLE_TITLE.to_string(),
         device: None,
         rate: None,
+        question: None,
+        cursor: (0.0, 0.0),
         hovering: false,
         last_click: None,
         fullscreen: false,
@@ -98,6 +109,9 @@ struct App {
     device: Option<String>,
     /// "30 fps · 2.1 Mbit/s · H.264", refreshed while streaming.
     rate: Option<String>,
+    /// The question on screen, if a phone is waiting to be let in.
+    question: Option<Question>,
+    cursor: (f32, f32),
     hovering: bool,
     last_click: Option<Instant>,
     fullscreen: bool,
@@ -162,6 +176,11 @@ impl App {
             }
         }
 
+        if let (Some(question), Some(text)) = (self.question.as_mut(), self.text.as_ref()) {
+            let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
+            question.draw(&mut canvas, text, scale);
+        }
+
         if let Err(e) = buffer.present() {
             warn!("cannot show the picture: {e}");
         }
@@ -189,9 +208,25 @@ impl App {
         });
     }
 
+    /// Sends the answer and takes the question off the screen.
+    fn answer(&mut self, answer: Answer) {
+        if let Some(question) = self.question.take() {
+            question.send(answer);
+            self.redraw();
+        }
+    }
+
     /// A click means different things on the two screens: while waiting it
     /// offers the next network address, while streaming it goes full screen.
     fn on_click(&mut self) {
+        // A question on screen swallows clicks: nothing else is worth doing
+        // until it is answered.
+        if let Some(question) = self.question.as_ref() {
+            if let Some(answer) = question.hit(self.cursor.0, self.cursor.1) {
+                self.answer(answer);
+            }
+            return;
+        }
         let now = Instant::now();
         let double = self
             .last_click
@@ -267,6 +302,13 @@ impl ApplicationHandler<UiEvent> for App {
                 // The title is left alone so a capture source keeps its target.
                 self.rate = None;
             }
+            UiEvent::Ask { device, id, answer } => {
+                self.question = Some(Question::new(device, id, answer));
+                if let Some(window) = &self.window {
+                    // The window may well be behind something else.
+                    window.request_user_attention(Some(UserAttentionType::Informational));
+                }
+            }
         }
         self.redraw();
     }
@@ -284,6 +326,22 @@ impl ApplicationHandler<UiEvent> for App {
                 self.hovering = false;
                 self.redraw();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.question.is_some() => match logical_key {
+                Key::Named(NamedKey::Enter) => self.answer(Answer::Allow),
+                Key::Named(NamedKey::Escape) => self.answer(Answer::Decline),
+                _ => {}
+            },
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,

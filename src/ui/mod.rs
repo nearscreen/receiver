@@ -6,6 +6,7 @@
 
 mod logo;
 mod paint;
+mod question;
 mod text;
 mod waiting;
 mod window;

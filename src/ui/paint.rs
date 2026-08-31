@@ -131,6 +131,14 @@ impl<'a> Canvas<'a> {
         self.pixels.fill(colour);
     }
 
+    /// Fades everything drawn so far towards the background, so that a
+    /// question laid over it is the only thing worth looking at.
+    pub fn dim(&mut self, amount: f32) {
+        for pixel in self.pixels.iter_mut() {
+            *pixel = mix(*pixel, colour::BACKGROUND, amount);
+        }
+    }
+
     /// Puts `colour` on the pixel, `coverage` deciding how much of it lands.
     pub fn blend(&mut self, x: i32, y: i32, colour: u32, coverage: f32) {
         if coverage <= 0.0 || x < 0 || y < 0 || x >= self.width || y >= self.height {
