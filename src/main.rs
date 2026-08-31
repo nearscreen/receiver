@@ -14,7 +14,8 @@ use log::{info, warn};
 
 use nearscreen_receiver::config::Config;
 use nearscreen_receiver::net::{
-    hostname, AllowAll, Codec, Server, ServerEvent, ServerOptions, DEFAULT_PORT,
+    hostname, Advertisement, AllowAll, Codec, Interfaces, Server, ServerEvent, ServerOptions,
+    DEFAULT_PORT,
 };
 
 /// How often the running statistics are printed.
@@ -51,6 +52,14 @@ struct Cli {
     #[arg(long, default_value = "h264")]
     codec: String,
 
+    /// Do not announce the receiver over mDNS; the phone then needs the address
+    #[arg(long)]
+    no_mdns: bool,
+
+    /// Announce on one interface only: an IP address, or "loopback"
+    #[arg(long, value_name = "IP|loopback")]
+    mdns_interface: Option<String>,
+
     /// Log every record, not just the interesting ones
     #[arg(short, long)]
     verbose: bool,
@@ -81,6 +90,10 @@ fn main() -> Result<()> {
         info!("this is not the default port {DEFAULT_PORT} — the phone needs it in its settings");
     }
 
+    // Kept alive for as long as the receiver runs; dropping it withdraws the
+    // announcement.
+    let _advertisement = start_advertisement(&cli, &config, &name, port);
+
     let mut dump = match &cli.dump {
         Some(path) => {
             let file = File::create(path)
@@ -106,6 +119,37 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Announces the receiver unless asked not to. A network that will not carry
+/// the announcement is not fatal: the phone can still be pointed at us by
+/// address, so this only warns.
+fn start_advertisement(cli: &Cli, config: &Config, name: &str, port: u16) -> Option<Advertisement> {
+    if cli.no_mdns {
+        info!("not announcing on the network (--no-mdns)");
+        return None;
+    }
+    let chosen = cli
+        .mdns_interface
+        .as_deref()
+        .or(config.preferred_interface.as_deref());
+    let interfaces = match chosen {
+        Some(value) => match Interfaces::parse(value) {
+            Ok(interfaces) => interfaces,
+            Err(e) => {
+                warn!("{e:#}; announcing on every interface instead");
+                Interfaces::default()
+            }
+        },
+        None => Interfaces::default(),
+    };
+    match Advertisement::start(name, port, &interfaces) {
+        Ok(advertisement) => Some(advertisement),
+        Err(e) => {
+            warn!("the receiver works but phones cannot discover it: {e:#}");
+            None
+        }
+    }
 }
 
 fn handle(event: ServerEvent, dump: &mut Option<BufWriter<File>>, stats: &mut Stats) -> Result<()> {
