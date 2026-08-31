@@ -45,9 +45,22 @@ impl Interfaces {
     }
 
     /// The interfaces to keep, as the mDNS responder names them.
+    ///
+    /// "All" does not mean every interface this computer has: announcing a
+    /// WSL or VPN address tells the phone to try somewhere it cannot reach,
+    /// and it has no way of knowing better. Only the networks a phone could
+    /// plausibly be on are announced.
     fn kinds(&self) -> Option<Vec<IfKind>> {
         match self {
-            Interfaces::All => None,
+            Interfaces::All => {
+                let reachable: Vec<IfKind> =
+                    local_addresses().into_iter().map(IfKind::Addr).collect();
+                if reachable.is_empty() {
+                    None
+                } else {
+                    Some(reachable)
+                }
+            }
             Interfaces::Only(address) => Some(vec![IfKind::Addr(*address)]),
             Interfaces::Loopback => Some(vec![IfKind::LoopbackV4, IfKind::LoopbackV6]),
         }
@@ -57,6 +70,8 @@ impl Interfaces {
 /// The addresses a phone on the same network could reach this computer on:
 /// every IPv4 that is not loopback, with the interface it belongs to. On a
 /// laptop with Wi-Fi and a dock this is where the choice comes from.
+/// Addresses on interfaces a phone could plausibly reach — a virtual switch's
+/// or a VPN's are left out.
 pub fn local_addresses() -> Vec<IpAddr> {
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
         warn!("cannot list this computer's network addresses");
@@ -78,7 +93,15 @@ pub fn local_addresses() -> Vec<IpAddr> {
         .collect();
     candidates.sort();
     candidates.dedup_by_key(|(_, address)| *address);
-    let addresses: Vec<IpAddr> = candidates.into_iter().map(|(_, address)| address).collect();
+    // A phone can be on a home network or an office one; it is never on this
+    // computer's virtual switch, and 169.254.x means no network at all.
+    let real: Vec<(u8, IpAddr)> = candidates
+        .iter()
+        .copied()
+        .filter(|(rank, _)| *rank <= 1)
+        .collect();
+    let chosen = if real.is_empty() { candidates } else { real };
+    let addresses: Vec<IpAddr> = chosen.into_iter().map(|(_, address)| address).collect();
     if let Some(first) = addresses.first() {
         debug!("the phone will be told about {first} first");
     }
