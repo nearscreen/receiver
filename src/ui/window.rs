@@ -4,6 +4,7 @@
 //! The title does not change while a phone comes and goes — a capture program
 //! keyed on the window title must not lose it across a reconnect.
 
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -97,7 +98,7 @@ pub fn run(
         title: IDLE_TITLE.to_string(),
         device: None,
         rate: None,
-        question: None,
+        questions: VecDeque::new(),
         cursor: (0.0, 0.0),
         hovering: false,
         last_click: None,
@@ -128,8 +129,9 @@ struct App {
     device: Option<String>,
     /// "30 fps · 2.1 Mbit/s · H.264", refreshed while streaming.
     rate: Option<String>,
-    /// The question on screen, if a phone is waiting to be let in.
-    question: Option<Question>,
+    /// Phones waiting to be let in. Two can turn up at once — a farm of them
+    /// can — and each deserves its own answer, one after another.
+    questions: VecDeque<Question>,
     cursor: (f32, f32),
     hovering: bool,
     last_click: Option<Instant>,
@@ -195,7 +197,7 @@ impl App {
             }
         }
 
-        if let (Some(question), Some(text)) = (self.question.as_mut(), self.text.as_ref()) {
+        if let (Some(question), Some(text)) = (self.questions.front_mut(), self.text.as_ref()) {
             let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
             question.draw(&mut canvas, text, scale);
         }
@@ -273,9 +275,10 @@ impl App {
         }
     }
 
-    /// Sends the answer and takes the question off the screen.
+    /// Answers the question on screen and brings up the next one, if a second
+    /// phone is waiting behind it.
     fn answer(&mut self, answer: Answer) {
-        if let Some(question) = self.question.take() {
+        if let Some(question) = self.questions.pop_front() {
             question.send(answer);
             self.redraw();
         }
@@ -286,7 +289,7 @@ impl App {
     fn on_click(&mut self) {
         // A question on screen swallows clicks: nothing else is worth doing
         // until it is answered.
-        if let Some(question) = self.question.as_ref() {
+        if let Some(question) = self.questions.front() {
             if let Some(answer) = question.hit(self.cursor.0, self.cursor.1) {
                 self.answer(answer);
             }
@@ -395,7 +398,7 @@ impl ApplicationHandler<UiEvent> for App {
             }
             UiEvent::Menu(choice) => self.on_menu(choice, _event_loop),
             UiEvent::Ask { device, id, answer } => {
-                self.question = Some(Question::new(device, id, answer));
+                self.questions.push_back(Question::new(device, id, answer));
                 if let Some(window) = &self.window {
                     // The window may well be behind something else.
                     window.request_user_attention(Some(UserAttentionType::Informational));
@@ -442,7 +445,7 @@ impl ApplicationHandler<UiEvent> for App {
                         ..
                     },
                 ..
-            } if self.question.is_some() => match logical_key {
+            } if !self.questions.is_empty() => match logical_key {
                 Key::Named(NamedKey::Enter) => self.answer(Answer::Allow),
                 Key::Named(NamedKey::Escape) => self.answer(Answer::Decline),
                 _ => {}
