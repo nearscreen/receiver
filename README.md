@@ -11,7 +11,7 @@ looking at it.
 
 | Waiting for a phone (macOS) | The first time one connects (Windows) | Streaming (Windows) |
 |---|---|---|
-| ![The receiver waiting, showing this computer's name, its address and a QR code](docs/waiting.png) | ![The question asked before any screen is shown: allow, always allow or decline](docs/consent.png) | ![A phone's screen in the window, with a strip naming the phone and the rate](docs/streaming.png) |
+| ![The receiver waiting, showing this computer's name, its address and a QR code](docs/waiting.png) | ![The question asked before any screen is shown: allow, always allow or decline](docs/consent.png) | ![A real iPhone home screen in the receiver window, with a strip naming the phone and the rate](docs/streaming.png) |
 
 ## Quick start
 
